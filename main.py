@@ -55,9 +55,9 @@ bot = telebot.TeleBot('7606481420:AAF2D6dln9mMSxBXgN3adMNZ575324dOzbI', state_st
 # Настройки для бота
 bot.remove_webhook()
 telebot.apihelper.RETRY_ON_ERROR = True
-telebot.apihelper.CONNECT_TIMEOUT = 60
-telebot.apihelper.READ_TIMEOUT = 60
-bot.skip_pending = True  # Пропускаем сообщения, полученные во время отключения
+telebot.apihelper.CONNECT_TIMEOUT = 30  # Уменьшаем тайм-аут
+telebot.apihelper.READ_TIMEOUT = 30     # Уменьшаем тайм-аут
+bot.skip_pending = True                 # Пропускаем сообщения, полученные во время отключения
 
 # Словарь для хранения выбранной модели для каждого пользователя
 user_models = {}
@@ -77,6 +77,26 @@ available_image_models = ["flux"]  # оставляем только flux
 user_analysis_models = {}
 default_analysis_model = "OCR"  # Меняем на OCR
 available_analysis_models = ["OCR"]  # Оставляем только OCR
+
+# Добавляем словарь для отслеживания последних сообщений
+processed_messages = {}
+
+# Функция для проверки дубликатов
+def is_duplicate_message(message):
+    # Создаем уникальный ключ для сообщения
+    message_key = f"{message.chat.id}_{message.message_id}"
+    current_time = time.time()
+    
+    # Очищаем старые сообщения (старше 5 секунд)
+    processed_messages.clear()
+    
+    # Проверяем, было ли сообщение уже обработано
+    if message_key in processed_messages:
+        return True
+    
+    # Добавляем сообщение в обработанные
+    processed_messages[message_key] = current_time
+    return False
 
 # Функция для повторных попыток подключения
 def retry_on_error(func):
@@ -102,11 +122,13 @@ def retry_on_error(func):
 def run_bot():
     try:
         logger.info("Запуск бота...")
+        # Изменяем параметры polling
         bot.infinity_polling(
-            timeout=120,
-            long_polling_timeout=120,
-            interval=1,
-            allowed_updates=["message", "callback_query", "edited_message"]
+            timeout=60,
+            long_polling_timeout=60,
+            interval=0,  # Уменьшаем интервал
+            allowed_updates=["message", "callback_query"],  # Упрощаем список обновлений
+            skip_pending=True  # Пропускаем старые сообщения
         )
     except Exception as e:
         logger.error(f"Ошибка в работе бота: {e}")
@@ -114,6 +136,8 @@ def run_bot():
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
+    if is_duplicate_message(message):
+        return
     markup = types.InlineKeyboardMarkup(row_width=1)
     subscribe_btn1 = types.InlineKeyboardButton(text='Подписаться на SigmaAI', url='https://t.me/SigmaAIchannel')
     subscribe_btn2 = types.InlineKeyboardButton(text='Подписаться на Ares AI', url='https://t.me/Aress_AI')
@@ -138,6 +162,8 @@ __Доступные команды:__
 
 @bot.message_handler(commands=['rules'])
 def send_rules(message):
+    if is_duplicate_message(message):
+        return
     rules_text = """
 📜 *ПРАВИЛА ИСПОЛЬЗОВАНИЯ SigmaAI* 📜
 
@@ -177,6 +203,8 @@ def send_rules(message):
 
 @bot.message_handler(commands=['models'])
 def choose_model(message):
+    if is_duplicate_message(message):
+        return
     user_model = user_models.get(message.from_user.id, default_model)
     markup = types.InlineKeyboardMarkup()
     
@@ -263,6 +291,8 @@ def handle_image_model_selection(call):
 @bot.message_handler(commands=['img'])
 @retry_on_error
 def generate_image(message):
+    if is_duplicate_message(message):
+        return
     try:
         # Получаем текст после команды
         if len(message.text.split()) < 2:
@@ -319,6 +349,8 @@ def generate_image(message):
 
 @bot.message_handler(commands=['anmodels'])
 def choose_analysis_model(message):
+    if is_duplicate_message(message):
+        return
     user_model = user_analysis_models.get(message.from_user.id, default_analysis_model)
     markup = types.InlineKeyboardMarkup()
     
@@ -364,6 +396,8 @@ def handle_analysis_model_selection(call):
 @bot.message_handler(content_types=['photo'])
 @retry_on_error
 def handle_photo(message):
+    if is_duplicate_message(message):
+        return
     try:
         bot.reply_to(
             message,
@@ -378,6 +412,8 @@ def handle_photo(message):
 @bot.message_handler(func=lambda message: True)
 @retry_on_error
 def handle_messages(message):
+    if is_duplicate_message(message):
+        return
     try:
         model = user_models.get(message.from_user.id, default_model)
         
