@@ -1,4 +1,4 @@
 pyTelegramBotAPI==4.14.1
-g4f==0.1.9.0
+g4f==0.4.7.5
 requests==2.31.0
 urllib3==2.1.0
