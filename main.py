@@ -81,23 +81,18 @@ available_analysis_models = ["OCR"]  # Оставляем только OCR
 # Добавляем словарь для отслеживания последних сообщений
 processed_messages = {}
 
-# Изменяем функцию проверки дубликатов
-def is_duplicate_message(message):
-    # Создаем уникальный ключ для сообщения
-    message_key = f"{message.chat.id}_{message.message_id}"
+# Добавляем простую защиту от дубликатов
+last_message_time = {}
+
+def is_duplicate(message, interval=2):
+    user_id = message.from_user.id
     current_time = time.time()
     
-    # Очищаем только старые сообщения (старше 5 секунд)
-    for key in list(processed_messages.keys()):
-        if current_time - processed_messages[key] > 5:
-            del processed_messages[key]
+    if user_id in last_message_time:
+        if current_time - last_message_time[user_id] < interval:
+            return True
     
-    # Проверяем, было ли сообщение уже обработано
-    if message_key in processed_messages:
-        return True
-    
-    # Добавляем сообщение в обработанные
-    processed_messages[message_key] = current_time
+    last_message_time[user_id] = current_time
     return False
 
 # Функция для повторных попыток подключения
@@ -122,23 +117,18 @@ def retry_on_error(func):
 
 # Модифицируем основной цикл бота
 def run_bot():
-    try:
-        logger.info("Запуск бота...")
-        bot.infinity_polling(
-            timeout=60,
-            long_polling_timeout=60,
-            interval=1,  # Увеличиваем интервал
-            allowed_updates=["message", "callback_query"],
-            skip_pending=True,
-            none_stop=True  # Добавляем параметр для непрерывной работы
-        )
-    except Exception as e:
-        logger.error(f"Ошибка в работе бота: {e}")
-        time.sleep(5)
+    while True:
+        try:
+            logger.info("Запуск бота...")
+            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+        except Exception as e:
+            logger.error(f"Ошибка в работе бота: {e}")
+            time.sleep(5)
+            continue
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    if is_duplicate_message(message):
+    if is_duplicate(message):
         return
     markup = types.InlineKeyboardMarkup(row_width=1)
     subscribe_btn1 = types.InlineKeyboardButton(text='Подписаться на SigmaAI', url='https://t.me/SigmaAIchannel')
@@ -164,7 +154,7 @@ __Доступные команды:__
 
 @bot.message_handler(commands=['rules'])
 def send_rules(message):
-    if is_duplicate_message(message):
+    if is_duplicate(message):
         return
     rules_text = """
 📜 *ПРАВИЛА ИСПОЛЬЗОВАНИЯ SigmaAI* 📜
@@ -205,7 +195,7 @@ def send_rules(message):
 
 @bot.message_handler(commands=['models'])
 def choose_model(message):
-    if is_duplicate_message(message):
+    if is_duplicate(message):
         return
     user_model = user_models.get(message.from_user.id, default_model)
     markup = types.InlineKeyboardMarkup()
@@ -291,41 +281,30 @@ def handle_image_model_selection(call):
     bot.answer_callback_query(call.id, f"✅ Выбрана модель {selected_model}")
 
 @bot.message_handler(commands=['img'])
-@retry_on_error
 def generate_image(message):
-    if is_duplicate_message(message):
+    if is_duplicate(message):
         return
+    if len(message.text.split()) < 2:
+        bot.reply_to(message, "Пожалуйста, добавьте описание изображения после команды /img")
+        return
+        
+    thinking_msg = bot.reply_to(message, "🎨 Генерирую изображение...")
+    
     try:
-        # Получаем текст после команды
-        if len(message.text.split()) < 2:
-            bot.reply_to(message, "Пожалуйста, добавьте описание изображения после команды /img")
-            return
-        
         prompt = " ".join(message.text.split()[1:])
-        thinking_msg = bot.reply_to(message, "🎨 Генерирую изображение...")
-        
-        # Параметры изображения
-        width = 1024
-        height = 1024
-        seed = int(time.time())  # используем текущее время как seed
-        
-        # Правильно кодируем промпт для URL
         prompt_encoded = urllib.parse.quote(prompt)
+        seed = int(time.time())
         
-        # Создаем URL для генерации
-        image_url = f"https://pollinations.ai/p/{prompt_encoded}?width={width}&height={height}&seed={seed}&model=flux&nologo=true&private=false&enhance=true&safe=false"
+        image_url = f"https://pollinations.ai/p/{prompt_encoded}?width=1024&height=1024&seed={seed}&model=flux&nologo=true&private=false&enhance=true&safe=false"
         
-        # Скачиваем изображение
         response = requests.get(image_url)
         if response.status_code == 200:
-            # Отправляем изображение как файл
             bot.send_photo(
                 message.chat.id,
                 response.content,
                 caption=f"🎨 Сгенерировано с помощью Flux",
                 reply_to_message_id=message.message_id
             )
-            # Удаляем сообщение "генерирую" только после успешной отправки
             bot.delete_message(thinking_msg.chat.id, thinking_msg.message_id)
         else:
             bot.edit_message_text(
@@ -333,25 +312,17 @@ def generate_image(message):
                 message_id=thinking_msg.message_id,
                 text="❌ Не удалось сгенерировать изображение. Попробуйте другой запрос."
             )
-            
     except Exception as e:
-        error_message = (
-            f"❌ Произошла ошибка при генерации изображения.\n"
-            f"⏳ Пожалуйста, попробуйте снова.\n"
-            f"🔍 Ошибка: {str(e)}"
+        logger.error(f"Ошибка при генерации изображения: {e}")
+        bot.edit_message_text(
+            chat_id=thinking_msg.chat.id,
+            message_id=thinking_msg.message_id,
+            text="❌ Произошла ошибка при генерации изображения. Попробуйте позже."
         )
-        try:
-            bot.edit_message_text(
-                chat_id=thinking_msg.chat.id,
-                message_id=thinking_msg.message_id,
-                text=error_message
-            )
-        except:
-            bot.reply_to(message, error_message)
 
 @bot.message_handler(commands=['anmodels'])
 def choose_analysis_model(message):
-    if is_duplicate_message(message):
+    if is_duplicate(message):
         return
     user_model = user_analysis_models.get(message.from_user.id, default_analysis_model)
     markup = types.InlineKeyboardMarkup()
@@ -398,30 +369,24 @@ def handle_analysis_model_selection(call):
 @bot.message_handler(content_types=['photo'])
 @retry_on_error
 def handle_photo(message):
-    if is_duplicate_message(message):
+    if is_duplicate(message):
         return
-    try:
-        bot.reply_to(
-            message,
-            "⚙️ *Анализ фотографий находится в разработке!*\n\n"
-            "Пожалуйста, попробуйте позже. Мы работаем над улучшением этой функции.",
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при отправке сообщения о разработке: {e}")
-        bot.reply_to(message, "❌ Произошла ошибка. Пожалуйста, попробуйте позже.")
+    bot.reply_to(
+        message,
+        "⚙️ *Анализ фотографий находится в разработке!*\n\n"
+        "Пожалуйста, попробуйте позже. Мы работаем над улучшением этой функции.",
+        parse_mode='Markdown'
+    )
 
 @bot.message_handler(func=lambda message: True)
-@retry_on_error
 def handle_messages(message):
-    if is_duplicate_message(message):
+    if is_duplicate(message):
         return
+    
+    thinking_msg = bot.reply_to(message, "🤔 Думаю над вашим вопросом...")
+    model = user_models.get(message.from_user.id, default_model)
+    
     try:
-        model = user_models.get(message.from_user.id, default_model)
-        
-        # Отправляем сообщение "думаю..."
-        thinking_msg = bot.reply_to(message, "🤔 Думаю над вашим вопросом...")
-        
         # Разные системные сообщения для разных моделей
         if model == "gpt-4o":
             system_message = """Ты - ИИ помощник GPT, который работает в телеграм боте SigmaAI, отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его. При вопросе о твоей модели, всегда отвечай что ты GPT-4o.
@@ -465,31 +430,18 @@ def handle_messages(message):
             )
         
         if response:
-            try:
-                bot.edit_message_text(
-                    chat_id=thinking_msg.chat.id,
-                    message_id=thinking_msg.message_id,
-                    text=response
-                )
-            except telebot.apihelper.ApiTelegramException as e:
-                if e.error_code != 400:  # Игнорируем ошибку о неизмененном сообщении
-                    raise e
-            
-    except Exception as e:
-        logger.error(f"Ошибка в обработке сообщения: {e}")
-        error_message = (
-            f"❌ Произошла ошибка при обработке запроса.\n"
-            f"⏳ Пожалуйста, подождите 30 секунд и попробуйте снова.\n"
-            f"🔍 Ошибка: {str(e)}"
-        )
-        try:
             bot.edit_message_text(
                 chat_id=thinking_msg.chat.id,
                 message_id=thinking_msg.message_id,
-                text=error_message
+                text=response
             )
-        except:
-            bot.reply_to(message, error_message)
+    except Exception as e:
+        logger.error(f"Ошибка в обработке сообщения: {e}")
+        bot.edit_message_text(
+            chat_id=thinking_msg.chat.id,
+            message_id=thinking_msg.message_id,
+            text="❌ Произошла ошибка. Попробуйте повторить запрос позже."
+        )
 
 def signal_handler(signum, frame):
     logger.info("Получен сигнал завершения, закрываем бота...")
@@ -506,24 +458,11 @@ signal.signal(signal.SIGTERM, signal_handler)
 if __name__ == "__main__":
     try:
         logger.info("Инициализация бота SigmaAI...")
-        # Убираем инициализацию OCR
-        
-        while True:
-            try:
-                run_bot()
-            except KeyboardInterrupt:
-                logger.info("Бот остановлен пользователем")
-                break
-            except Exception as e:
-                logger.error(f"Критическая ошибка: {e}")
-                logger.info("Перезапуск через 30 секунд...")
-                time.sleep(30)
-                continue
-            
+        run_bot()
     except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем")
     except Exception as e:
-        logger.error(f"Критическая ошибка при инициализации: {e}")
+        logger.error(f"Критическая ошибка: {e}")
     finally:
         try:
             bot.stop_polling()
