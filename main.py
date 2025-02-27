@@ -209,18 +209,25 @@ def choose_model(message):
     
     bot.reply_to(message, "Выберите модель ИИ:", reply_markup=markup)
 
+# Функция для получения текущей модели пользователя
+def get_user_model(user_id):
+    return user_models.get(user_id, default_model)
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('model_'))
 def handle_model_selection(call):
     selected_model = call.data.split('_')[1]
-    current_model = user_models.get(call.from_user.id, default_model)
+    user_id = call.from_user.id
+    current_model = get_user_model(user_id)
     
     # Проверяем, не выбрана ли уже эта модель
     if selected_model == current_model:
         bot.answer_callback_query(call.id, "⚠️ Эта модель уже выбрана!", show_alert=True)
         return
     
-    user_models[call.from_user.id] = selected_model
+    # Сохраняем выбор модели
+    user_models[user_id] = selected_model
     
+    # Обновляем клавиатуру
     markup = types.InlineKeyboardMarkup()
     for model in available_models:
         button_text = f"{'✅ ' if model == selected_model else ''}{model}"
@@ -229,13 +236,17 @@ def handle_model_selection(call):
             callback_data=f"model_{model}"
         ))
     
-    bot.edit_message_reply_markup(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        reply_markup=markup
-    )
-    
-    bot.answer_callback_query(call.id, f"✅ Выбрана модель {selected_model}")
+    try:
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
+        bot.answer_callback_query(call.id, f"✅ Выбрана модель {selected_model}")
+        logger.info(f"Пользователь {user_id} выбрал модель {selected_model}")
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении модели: {e}")
+        bot.answer_callback_query(call.id, "❌ Произошла ошибка при выборе модели")
 
 @bot.message_handler(commands=['gmodels'])
 def choose_image_model(message):
@@ -383,8 +394,9 @@ def handle_messages(message):
     if is_duplicate(message):
         return
     
-    thinking_msg = bot.reply_to(message, "🤔 Думаю над вашим вопросом...")
-    model = user_models.get(message.from_user.id, default_model)
+    user_id = message.from_user.id
+    model = get_user_model(user_id)
+    thinking_msg = bot.reply_to(message, f"🤔 Думаю над вашим вопросом")
     
     try:
         # Разные системные сообщения для разных моделей
@@ -392,16 +404,6 @@ def handle_messages(message):
             system_message = """Ты - ИИ помощник GPT, который работает в телеграм боте SigmaAI, отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его. При вопросе о твоей модели, всегда отвечай что ты GPT-4o.
 
 Давай самые лучшие варианты для своего клиента, удачи!"""
-        elif model == "deepseek-r1":
-            system_message = """Ты - ИИ помощник DeepSeek, который работает в телеграм боте SigmaAI, отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его. При вопросе о твоей модели, всегда отвечай что ты DeepSeek-r1.
-
-Давай самые лучшие варианты для своего клиента, удачи!"""
-        elif model == "llama-3.3-70b":
-            system_message = """Ты - ИИ помощник Llama, который работает в телеграм боте SigmaAI, отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его. При вопросе о твоей модели, всегда отвечай что ты Llama 3.3 70B.
-
-Давай самые лучшие варианты для своего клиента, удачи!"""
-        
-        if model == "gpt-4o":
             response = g4f.ChatCompletion.create(
                 model="gpt-4o",
                 provider=Provider.PollinationsAI,
@@ -411,6 +413,9 @@ def handle_messages(message):
                 ]
             )
         elif model == "deepseek-r1":
+            system_message = """Ты - ИИ помощник DeepSeek, который работает в телеграм боте SigmaAI, отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его. При вопросе о твоей модели, всегда отвечай что ты DeepSeek-r1.
+
+Давай самые лучшие варианты для своего клиента, удачи!"""
             response = g4f.ChatCompletion.create(
                 model="deepseek-r1",
                 provider=Provider.Blackbox,
@@ -420,6 +425,9 @@ def handle_messages(message):
                 ]
             )
         elif model == "llama-3.3-70b":
+            system_message = """Ты - ИИ помощник Llama, который работает в телеграм боте SigmaAI, отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его. При вопросе о твоей модели, всегда отвечай что ты Llama 3.3 70B.
+
+Давай самые лучшие варианты для своего клиента, удачи!"""
             response = g4f.ChatCompletion.create(
                 model="llama-3.3-70b",
                 provider=Provider.DeepInfraChat,
@@ -435,12 +443,13 @@ def handle_messages(message):
                 message_id=thinking_msg.message_id,
                 text=response
             )
+            logger.info(f"Успешный ответ от модели {model} для пользователя {user_id}")
     except Exception as e:
-        logger.error(f"Ошибка в обработке сообщения: {e}")
+        logger.error(f"Ошибка в обработке сообщения для модели {model}: {e}")
         bot.edit_message_text(
             chat_id=thinking_msg.chat.id,
             message_id=thinking_msg.message_id,
-            text="❌ Произошла ошибка. Попробуйте повторить запрос позже."
+            text=f"❌ Произошла ошибка при работе с моделью {model}. Попробуйте повторить запрос позже."
         )
 
 def signal_handler(signum, frame):
