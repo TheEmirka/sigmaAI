@@ -63,6 +63,9 @@ bot.skip_pending = True                 # Пропускаем сообщени�
 user_models = {}
 default_model = "deepseek-r1"  # модель по умолчанию
 
+# Словарь для хранения истории диалогов
+user_chat_history = {}
+
 # Доступные модели
 available_models = ["deepseek-r1", "gpt-4o", "llama-3.3-70b"]
 
@@ -211,7 +214,26 @@ def choose_model(message):
 
 # Функция для получения текущей модели пользователя
 def get_user_model(user_id):
-    return user_models.get(user_id, default_model)
+    if user_id not in user_models:
+        user_models[user_id] = default_model
+    return user_models[user_id]
+
+# Функция для получения истории диалога пользователя
+def get_user_history(user_id, model):
+    if user_id not in user_chat_history:
+        user_chat_history[user_id] = {}
+    if model not in user_chat_history[user_id]:
+        user_chat_history[user_id][model] = []
+    return user_chat_history[user_id][model]
+
+# Функция для добавления сообщения в историю
+def add_to_history(user_id, model, role, content):
+    history = get_user_history(user_id, model)
+    history.append({"role": role, "content": content})
+    # Ограничиваем историю последними 10 сообщениями
+    if len(history) > 20:
+        history.pop(0)
+    user_chat_history[user_id][model] = history
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('model_'))
 def handle_model_selection(call):
@@ -237,9 +259,10 @@ def handle_model_selection(call):
         ))
     
     try:
-        bot.edit_message_reply_markup(
+        bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
+            text=f"Выбрана модель: {selected_model}",
             reply_markup=markup
         )
         bot.answer_callback_query(call.id, f"✅ Выбрана модель {selected_model}")
@@ -396,48 +419,49 @@ def handle_messages(message):
     
     user_id = message.from_user.id
     model = get_user_model(user_id)
-    thinking_msg = bot.reply_to(message, f"🤔 Думаю над вашим вопросом")
+    thinking_msg = bot.reply_to(message, f"🤔 Думаю над вашим вопросом (модель: {model})")
     
     try:
+        # Получаем историю диалога для текущей модели
+        chat_history = get_user_history(user_id, model)
+        
         # Разные системные сообщения для разных моделей
         if model == "gpt-4o":
             system_message = """Ты - ИИ помощник GPT, который работает в телеграм боте SigmaAI, отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его. При вопросе о твоей модели, всегда отвечай что ты GPT-4o.
 
 Давай самые лучшие варианты для своего клиента, удачи!"""
+            messages = [{"role": "system", "content": system_message}] + chat_history + [{"role": "user", "content": message.text}]
             response = g4f.ChatCompletion.create(
                 model="gpt-4o",
                 provider=Provider.PollinationsAI,
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": message.text}
-                ]
+                messages=messages
             )
         elif model == "deepseek-r1":
             system_message = """Ты - ИИ помощник DeepSeek, который работает в телеграм боте SigmaAI, отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его. При вопросе о твоей модели, всегда отвечай что ты DeepSeek-r1.
 
 Давай самые лучшие варианты для своего клиента, удачи!"""
+            messages = [{"role": "system", "content": system_message}] + chat_history + [{"role": "user", "content": message.text}]
             response = g4f.ChatCompletion.create(
                 model="deepseek-r1",
                 provider=Provider.Blackbox,
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": message.text}
-                ]
+                messages=messages
             )
         elif model == "llama-3.3-70b":
             system_message = """Ты - ИИ помощник Llama, который работает в телеграм боте SigmaAI, отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его. При вопросе о твоей модели, всегда отвечай что ты Llama 3.3 70B.
 
 Давай самые лучшие варианты для своего клиента, удачи!"""
+            messages = [{"role": "system", "content": system_message}] + chat_history + [{"role": "user", "content": message.text}]
             response = g4f.ChatCompletion.create(
                 model="llama-3.3-70b",
                 provider=Provider.DeepInfraChat,
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": message.text}
-                ]
+                messages=messages
             )
         
         if response:
+            # Добавляем сообщение пользователя и ответ в историю
+            add_to_history(user_id, model, "user", message.text)
+            add_to_history(user_id, model, "assistant", response)
+            
             bot.edit_message_text(
                 chat_id=thinking_msg.chat.id,
                 message_id=thinking_msg.message_id,
