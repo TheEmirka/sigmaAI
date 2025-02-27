@@ -81,14 +81,16 @@ available_analysis_models = ["OCR"]  # Оставляем только OCR
 # Добавляем словарь для отслеживания последних сообщений
 processed_messages = {}
 
-# Функция для проверки дубликатов
+# Изменяем функцию проверки дубликатов
 def is_duplicate_message(message):
     # Создаем уникальный ключ для сообщения
     message_key = f"{message.chat.id}_{message.message_id}"
     current_time = time.time()
     
-    # Очищаем старые сообщения (старше 5 секунд)
-    processed_messages.clear()
+    # Очищаем только старые сообщения (старше 5 секунд)
+    for key in list(processed_messages.keys()):
+        if current_time - processed_messages[key] > 5:
+            del processed_messages[key]
     
     # Проверяем, было ли сообщение уже обработано
     if message_key in processed_messages:
@@ -122,13 +124,13 @@ def retry_on_error(func):
 def run_bot():
     try:
         logger.info("Запуск бота...")
-        # Изменяем параметры polling
         bot.infinity_polling(
             timeout=60,
             long_polling_timeout=60,
-            interval=0,  # Уменьшаем интервал
-            allowed_updates=["message", "callback_query"],  # Упрощаем список обновлений
-            skip_pending=True  # Пропускаем старые сообщения
+            interval=1,  # Увеличиваем интервал
+            allowed_updates=["message", "callback_query"],
+            skip_pending=True,
+            none_stop=True  # Добавляем параметр для непрерывной работы
         )
     except Exception as e:
         logger.error(f"Ошибка в работе бота: {e}")
