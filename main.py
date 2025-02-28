@@ -388,7 +388,18 @@ def handle_messages(message):
     
     user_id = message.from_user.id
     model = get_user_model(user_id)
-    thinking_msg = bot.reply_to(message, f"🤔 Думаю над вашим вопросом...")
+    
+    model_emoji = {
+        "gpt-4o": "🧠",
+        "deepseek-r1": "🤖",
+        "llama-3.3-70b": "🦙"
+    }.get(model, "🤔")
+    
+    thinking_msg = bot.reply_to(
+        message, 
+        f"{model_emoji} Модель *{model}* думает над вашим вопросом...",
+        parse_mode='Markdown'
+    )
     
     try:
         # Получаем историю диалога для текущей модели
