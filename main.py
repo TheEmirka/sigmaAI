@@ -15,10 +15,6 @@ from telebot.storage import StateMemoryStorage
 import sys
 import logging
 from datetime import datetime
-# import easyocr  # OCR временно отключен
-# import numpy as np  # Не нужен без OCR
-# import cv2  # Не нужен без OCR
-# from PIL import Image  # Не нужен без OCR
 import io
 import signal
 
@@ -76,26 +72,41 @@ default_image_model = "flux"  # меняем модель по умолчани�
 # Доступные модели для генерации изображений
 available_image_models = ["flux"]  # оставляем только flux
 
-# Добавляем в начало файла новые переменные
-user_analysis_models = {}
-default_analysis_model = "OCR"  # Меняем на OCR
-available_analysis_models = ["OCR"]  # Оставляем только OCR
-
 # Добавляем словарь для отслеживания последних сообщений
 processed_messages = {}
 
 # Добавляем простую защиту от дубликатов
 last_message_time = {}
+processed_message_ids = set()
 
 def is_duplicate(message, interval=2):
+    """
+    Проверяет, является ли сообщение дубликатом на основе:
+    1. ID сообщения (защита от двойной обработки одного и того же сообщения)
+    2. Временного интервала между сообщениями от одного пользователя
+    """
     user_id = message.from_user.id
+    message_id = message.message_id
     current_time = time.time()
     
+    # Проверка по ID сообщения
+    if message_id in processed_message_ids:
+        return True
+    
+    # Проверка по временному интервалу
     if user_id in last_message_time:
-        if current_time - last_message_time[user_id] < interval:
+        time_diff = current_time - last_message_time[user_id]
+        if time_diff < interval:
             return True
     
+    # Сохраняем информацию о сообщении
+    processed_message_ids.add(message_id)
     last_message_time[user_id] = current_time
+    
+    # Очистка старых message_id (оставляем только последние 1000)
+    if len(processed_message_ids) > 1000:
+        processed_message_ids.clear()
+    
     return False
 
 # Функция для повторных попыток подключения
@@ -151,7 +162,6 @@ __Доступные команды:__
 • `/models` - выбрать модель ИИ
 • `/img` - сгенерировать изображение
 • `/gmodels` - выбрать модель для генерации изображений
-• `/anmodels` - выбрать модель для анализа изображений
     """
     bot.reply_to(message, welcome_text, reply_markup=markup, parse_mode='Markdown')
 
@@ -199,7 +209,9 @@ def send_rules(message):
 @bot.message_handler(commands=['models'])
 def choose_model(message):
     if is_duplicate(message):
+        logger.info(f"Дубликат команды /models от пользователя {message.from_user.id}")
         return
+        
     user_model = user_models.get(message.from_user.id, default_model)
     markup = types.InlineKeyboardMarkup()
     
@@ -211,6 +223,7 @@ def choose_model(message):
         ))
     
     bot.reply_to(message, "Выберите модель ИИ:", reply_markup=markup)
+    logger.info(f"Отправлено меню выбора модели пользователю {message.from_user.id}")
 
 # Функция для получения текущей модели пользователя
 def get_user_model(user_id):
@@ -317,12 +330,15 @@ def handle_image_model_selection(call):
 @bot.message_handler(commands=['img'])
 def generate_image(message):
     if is_duplicate(message):
+        logger.info(f"Дубликат команды /img от пользователя {message.from_user.id}")
         return
+        
     if len(message.text.split()) < 2:
         bot.reply_to(message, "Пожалуйста, добавьте описание изображения после команды /img")
         return
         
     thinking_msg = bot.reply_to(message, "🎨 Генерирую изображение...")
+    logger.info(f"Начата генерация изображения для пользователя {message.from_user.id}")
     
     try:
         prompt = " ".join(message.text.split()[1:])
@@ -354,52 +370,6 @@ def generate_image(message):
             text="❌ Произошла ошибка при генерации изображения. Попробуйте позже."
         )
 
-@bot.message_handler(commands=['anmodels'])
-def choose_analysis_model(message):
-    if is_duplicate(message):
-        return
-    user_model = user_analysis_models.get(message.from_user.id, default_analysis_model)
-    markup = types.InlineKeyboardMarkup()
-    
-    for model in available_analysis_models:
-        button_text = f"{'✅ ' if model == user_model else ''}{model}"
-        markup.add(types.InlineKeyboardButton(
-            text=button_text,
-            callback_data=f"an_model_{model}"
-        ))
-    
-    bot.reply_to(message, "**Выберите модель для анализа изображений:**", reply_markup=markup, parse_mode='Markdown')
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('an_model_'))
-def handle_analysis_model_selection(call):
-    selected_model = call.data.split('_')[2]
-    current_model = user_analysis_models.get(call.from_user.id, default_analysis_model)
-    
-    # Проверяем, не выбрана ли уже эта модель
-    if selected_model == current_model:
-        bot.answer_callback_query(call.id, "⚠️ Эта модель уже выбрана!", show_alert=True)
-        return
-    
-    user_analysis_models[call.from_user.id] = selected_model
-    
-    markup = types.InlineKeyboardMarkup()
-    for model in available_analysis_models:
-        button_text = f"{'✅ ' if model == selected_model else ''}{model}"
-        markup.add(types.InlineKeyboardButton(
-            text=button_text,
-            callback_data=f"an_model_{model}"
-        ))
-    
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text="**Выберите модель для анализа изображений:**",
-        reply_markup=markup,
-        parse_mode='Markdown'
-    )
-    
-    bot.answer_callback_query(call.id, f"✅ Выбрана модель {selected_model}")
-
 @bot.message_handler(content_types=['photo'])
 @retry_on_error
 def handle_photo(message):
@@ -407,8 +377,7 @@ def handle_photo(message):
         return
     bot.reply_to(
         message,
-        "⚙️ *Анализ фотографий находится в разработке!*\n\n"
-        "Пожалуйста, попробуйте позже. Мы работаем над улучшением этой функции.",
+        "❌ *Обработка фотографий не поддерживается.*",
         parse_mode='Markdown'
     )
 
