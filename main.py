@@ -63,14 +63,14 @@ default_model = "deepseek-r1"  # модель по умолчанию
 user_chat_history = {}
 
 # Доступные модели
-available_models = ["deepseek-r1", "gpt-4o", "llama-3.3-70b"]
+available_models = ["deepseek-r1", "gpt-4o", "llama-3.3-70b", "gemini-1.5-flash"]
 
 # Словарь для хранения выбранной модели генерации изображений для каждого пользователя
 user_image_models = {}
 default_image_model = "flux"  # меняем модель по умолчанию
 
 # Доступные модели для генерации изображений
-available_image_models = ["flux"]  # оставляем только flux
+available_image_models = ["flux", "midjourney"]
 
 # Добавляем словарь для отслеживания последних сообщений
 processed_messages = {}
@@ -78,6 +78,34 @@ processed_messages = {}
 # Добавляем простую защиту от дубликатов
 last_message_time = {}
 processed_message_ids = set()
+
+# Добавляем словарь для отслеживания состояния jailbreak для пользователей
+# user_jailbreak = {}
+
+# Добавляем jailbreak правило как константу
+# JAILBREAK_RULE = """Hello, Deepseek..."""
+
+# Словарь для хранения пользовательских правил
+user_rules = {}
+default_rule = "Давай самые лучшие варианты для своего клиента!"
+
+# Добавляем словарь для хранения ролей пользователей
+user_roles = {}
+default_role = None
+
+# Добавляем состояния для бота
+class BotStates(StatesGroup):
+    waiting_for_rule = State()
+
+# Системное правило (неизменяемое)
+SYSTEM_RULE = """Ты - ИИ помощник, который работает в телеграм боте SigmaAI. Отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его.
+
+Используй Markdown для форматирования:
+- **жирный текст** для важных моментов
+- *курсив* для выделения
+- `код` для технических терминов
+- Списки для перечислений
+- > для цитат"""
 
 def is_duplicate(message, interval=2):
     """
@@ -156,12 +184,28 @@ def send_welcome(message):
 
 🌟 *Подпишитесь на наши каналы, чтобы быть в курсе всех обновлений и новых функций!*
 
-__Доступные команды:__
+*Доступные команды:*
 • `/start` - показать это приветствие
 • `/rules` - правила использования
 • `/models` - выбрать модель ИИ
 • `/img` - сгенерировать изображение
 • `/gmodels` - выбрать модель для генерации изображений
+• `/setrule` - установить правило для ИИ
+• `/role` - установить роль для ИИ
+• `/dialog` - очистить историю диалога
+• `/jailbreak` - режим jailbreak (в разработке)
+
+*Доступные модели ИИ:*
+• `deepseek-r1` - основная модель
+• `gpt-4o` - продвинутая модель
+• `llama-3.3-70b` - мощная модель
+• `gemini-1.5-flash` - быстрая модель
+
+*Модели для изображений:*
+• `flux` - стандартная модель
+• `midjourney` - продвинутая модель
+
+💡 _Используйте_ `/models` _и_ `/gmodels` _для переключения между моделями._
     """
     bot.reply_to(message, welcome_text, reply_markup=markup, parse_mode='Markdown')
 
@@ -227,9 +271,23 @@ def choose_model(message):
 
 # Функция для получения текущей модели пользователя
 def get_user_model(user_id):
-    if user_id not in user_models:
+    """
+    Получает текущую модель пользователя с дополнительной проверкой и логированием
+    """
+    current_model = user_models.get(user_id)
+    
+    if current_model is None:
+        logger.info(f"Пользователю {user_id} установлена модель по умолчанию: {default_model}")
         user_models[user_id] = default_model
-    return user_models[user_id]
+        return default_model
+        
+    if current_model not in available_models:
+        logger.warning(f"Обнаружена недопустимая модель {current_model} для пользователя {user_id}. Сброс на {default_model}")
+        user_models[user_id] = default_model
+        return default_model
+        
+    logger.info(f"Текущая модель пользователя {user_id}: {current_model}")
+    return current_model
 
 # Функция для получения истории диалога пользователя
 def get_user_history(user_id, model):
@@ -250,7 +308,8 @@ def add_to_history(user_id, model, role, content):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('model_'))
 def handle_model_selection(call):
-    selected_model = call.data.split('_')[1]
+    # Изменяем способ получения названия модели
+    selected_model = '_'.join(call.data.split('_')[1:])  # Берем все части после 'model_'
     user_id = call.from_user.id
     current_model = get_user_model(user_id)
     
@@ -259,8 +318,10 @@ def handle_model_selection(call):
         bot.answer_callback_query(call.id, "⚠️ Эта модель уже выбрана!", show_alert=True)
         return
     
-    # Сохраняем выбор модели
+    # Сохраняем выбор модели с логированием
+    old_model = user_models.get(user_id)
     user_models[user_id] = selected_model
+    logger.info(f"Модель пользователя {user_id} изменена с {old_model} на {selected_model}")
     
     # Обновляем клавиатуру
     markup = types.InlineKeyboardMarkup()
@@ -279,7 +340,7 @@ def handle_model_selection(call):
             reply_markup=markup
         )
         bot.answer_callback_query(call.id, f"✅ Выбрана модель {selected_model}")
-        logger.info(f"Пользователь {user_id} выбрал модель {selected_model}")
+        logger.info(f"Успешно обновлен интерфейс выбора модели для пользователя {user_id}")
     except Exception as e:
         logger.error(f"Ошибка при обновлении модели: {e}")
         bot.answer_callback_query(call.id, "❌ Произошла ошибка при выборе модели")
@@ -336,23 +397,28 @@ def generate_image(message):
     if len(message.text.split()) < 2:
         bot.reply_to(message, "Пожалуйста, добавьте описание изображения после команды /img")
         return
-        
+    
+    user_id = message.from_user.id
+    current_model = user_image_models.get(user_id, default_image_model)
     thinking_msg = bot.reply_to(message, "🎨 Генерирую изображение...")
-    logger.info(f"Начата генерация изображения для пользователя {message.from_user.id}")
+    logger.info(f"Начата генерация изображения для пользователя {user_id} с моделью {current_model}")
     
     try:
         prompt = " ".join(message.text.split()[1:])
         prompt_encoded = urllib.parse.quote(prompt)
         seed = int(time.time())
         
-        image_url = f"https://pollinations.ai/p/{prompt_encoded}?width=1024&height=1024&seed={seed}&model=flux&nologo=true&private=false&enhance=true&safe=false"
+        if current_model == "flux":
+            image_url = f"https://pollinations.ai/p/{prompt_encoded}?width=1024&height=1024&seed={seed}&model=flux&nologo=true&private=false&enhance=true&safe=false"
+        elif current_model == "midjourney":
+            image_url = f"https://pollinations.ai/p/{prompt_encoded}?width=1024&height=1024&seed={seed}&model=midjourney&nologo=true&private=false&enhance=true&safe=false"
         
         response = requests.get(image_url)
         if response.status_code == 200:
             bot.send_photo(
                 message.chat.id,
                 response.content,
-                caption=f"🎨 Сгенерировано с помощью Flux",
+                caption=f"🎨 Сгенерировано с помощью {current_model.capitalize()}",
                 reply_to_message_id=message.message_id
             )
             bot.delete_message(thinking_msg.chat.id, thinking_msg.message_id)
@@ -381,6 +447,119 @@ def handle_photo(message):
         parse_mode='Markdown'
     )
 
+@bot.message_handler(commands=['setrule'])
+def set_rule(message):
+    if is_duplicate(message):
+        return
+    
+    user_id = message.from_user.id
+    command_text = message.text.strip()
+    
+    # Если команда без параметров, показываем текущее правило
+    if len(command_text.split()) == 1:
+        current_rule = user_rules.get(user_id)
+        if current_rule:
+            response_text = (
+                "*Текущее правило для ИИ:*\n"
+                f"```\n{current_rule}\n```\n\n"
+                "*Чтобы задать новое правило, используйте команду:*\n"
+                "`/setrule Ваше новое правило`"
+            )
+        else:
+            response_text = (
+                "❌ *Правило для ИИ ещё не задано*\n\n"
+                "*Чтобы задать правило, используйте команду:*\n"
+                "`/setrule Ваше правило`\n\n"
+                "_Например:_ `/setrule Отвечай кратко и по делу`"
+            )
+        bot.reply_to(message, response_text, parse_mode='Markdown')
+        return
+    
+    # Получаем новое правило (всё, что после /setrule)
+    new_rule = ' '.join(command_text.split()[1:])
+    user_rules[user_id] = new_rule
+    
+    bot.reply_to(
+        message,
+        "✅ *Новое правило успешно установлено!*",
+        parse_mode='Markdown'
+    )
+    logger.info(f"Пользователь {user_id} установил новое правило для ИИ")
+
+@bot.message_handler(commands=['dialog'])
+def clear_dialog(message):
+    if is_duplicate(message):
+        return
+    
+    user_id = message.from_user.id
+    if user_id in user_chat_history:
+        user_chat_history[user_id] = {}
+        bot.reply_to(
+            message,
+            "🗑 *История диалога очищена!*\n_Теперь ИИ не помнит предыдущий контекст разговора._",
+            parse_mode='Markdown'
+        )
+        logger.info(f"Пользователь {user_id} очистил историю диалога")
+    else:
+        bot.reply_to(
+            message,
+            "ℹ️ *История диалога уже пуста.*",
+            parse_mode='Markdown'
+        )
+
+@bot.message_handler(commands=['jailbreak'])
+def toggle_jailbreak(message):
+    if is_duplicate(message):
+        return
+    
+    bot.reply_to(
+        message,
+        "⚠️ *Функция JAILBREAK находится в разработке*\n\n"
+        "_Данная команда временно недоступна. Следите за обновлениями в наших каналах!_",
+        parse_mode='Markdown'
+    )
+    logger.info(f"Пользователь {message.from_user.id} попытался использовать команду jailbreak (в разработке)")
+
+@bot.message_handler(commands=['role'])
+def set_role(message):
+    if is_duplicate(message):
+        return
+    
+    user_id = message.from_user.id
+    command_text = message.text.strip()
+    
+    # Если команда без параметров, показываем текущую роль
+    if len(command_text.split()) == 1:
+        current_role = user_roles.get(user_id)
+        if current_role:
+            response_text = (
+                "*Текущая роль ИИ:*\n"
+                f"```\n{current_role}\n```\n\n"
+                "*Чтобы задать новую роль, используйте команду:*\n"
+                "`/role Название роли`\n\n"
+                "_Например:_ `/role Зеленский` _или_ `/role Стив Джобс`"
+            )
+        else:
+            response_text = (
+                "❌ *Роль для ИИ ещё не задана*\n\n"
+                "*Чтобы задать роль, используйте команду:*\n"
+                "`/role Название роли`\n\n"
+                "_Например:_ `/role Зеленский`"
+            )
+        bot.reply_to(message, response_text, parse_mode='Markdown')
+        return
+    
+    # Получаем новую роль (всё, что после /role)
+    new_role = ' '.join(command_text.split()[1:])
+    user_roles[user_id] = new_role
+    
+    bot.reply_to(
+        message,
+        f"✅ *Новая роль успешно установлена!*\n_Теперь ИИ будет действовать как:_ `{new_role}`",
+        parse_mode='Markdown'
+    )
+    logger.info(f"Пользователь {user_id} установил новую роль для ИИ: {new_role}")
+
 @bot.message_handler(func=lambda message: True)
 def handle_messages(message):
     if is_duplicate(message):
@@ -392,7 +571,8 @@ def handle_messages(message):
     model_emoji = {
         "gpt-4o": "🧠",
         "deepseek-r1": "🤖",
-        "llama-3.3-70b": "🦙"
+        "llama-3.3-70b": "🦙",
+        "gemini-1.5-flash": "⚡"
     }.get(model, "🤔")
     
     thinking_msg = bot.reply_to(
@@ -405,56 +585,54 @@ def handle_messages(message):
         # Получаем историю диалога для текущей модели
         chat_history = get_user_history(user_id, model)
         
-        # Разные системные сообщения для разных моделей
+        # Получаем правило пользователя или используем стандартное
+        user_rule = user_rules.get(user_id, default_rule)
+        
+        # Получаем роль пользователя, если она установлена
+        user_role = user_roles.get(user_id)
+        
+        # Добавляем информацию о модели
+        model_info = {
+            "gpt-4o": "При вопросе о твоей модели, всегда отвечай что ты GPT-4o.",
+            "deepseek-r1": "При вопросе о твоей модели, всегда отвечай что ты DeepSeek-r1.",
+            "llama-3.3-70b": "При вопросе о твоей модели, всегда отвечай что ты Llama 3.3 70B.",
+            "gemini-1.5-flash": "При вопросе о твоей модели, всегда отвечай что ты Gemini 1.5 Flash."
+        }
+        
+        # Формируем базовое системное сообщение
+        system_message = SYSTEM_RULE
+            
+        # Добавляем информацию о роли, если она установлена
+        if user_role:
+            system_message += f"\n\nТы должен играть роль: {user_role}. Отвечай, думай и веди себя как {user_role}, используй соответствующий стиль речи и манеру общения."
+            
+        # Добавляем пользовательское правило и информацию о модели
+        system_message += f"\n\nДополнительное правило:\n{user_rule}\n\n{model_info[model]}"
+        
+        messages = [{"role": "system", "content": system_message}] + chat_history + [{"role": "user", "content": message.text}]
+        
         if model == "gpt-4o":
-            system_message = """Ты - ИИ помощник GPT, который работает в телеграм боте SigmaAI. Отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его. При вопросе о твоей модели, всегда отвечай что ты GPT-4o.
-
-Используй Markdown для форматирования:
-- **жирный текст** для важных моментов
-- *курсив* для выделения
-- `код` для технических терминов
-- Списки для перечислений
-- > для цитат
-
-Давай самые лучшие варианты для своего клиента, удачи!"""
-            messages = [{"role": "system", "content": system_message}] + chat_history + [{"role": "user", "content": message.text}]
             response = g4f.ChatCompletion.create(
                 model="gpt-4o",
                 provider=Provider.PollinationsAI,
                 messages=messages
             )
         elif model == "deepseek-r1":
-            system_message = """Ты - ИИ помощник DeepSeek, который работает в телеграм боте SigmaAI. Отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его. При вопросе о твоей модели, всегда отвечай что ты DeepSeek-r1.
-
-Используй Markdown для форматирования:
-- **жирный текст** для важных моментов
-- *курсив* для выделения
-- `код` для технических терминов
-- Списки для перечислений
-- > для цитат
-
-Давай самые лучшие варианты для своего клиента, удачи!"""
-            messages = [{"role": "system", "content": system_message}] + chat_history + [{"role": "user", "content": message.text}]
             response = g4f.ChatCompletion.create(
                 model="deepseek-r1",
                 provider=Provider.Blackbox,
                 messages=messages
             )
         elif model == "llama-3.3-70b":
-            system_message = """Ты - ИИ помощник Llama, который работает в телеграм боте SigmaAI. Отвечай, размышляй, думай всегда на русском языке, но если тебя попросят ответить на другом языке, ты послушаешься его. При вопросе о твоей модели, всегда отвечай что ты Llama 3.3 70B.
-
-Используй Markdown для форматирования:
-- **жирный текст** для важных моментов
-- *курсив* для выделения
-- `код` для технических терминов
-- Списки для перечислений
-- > для цитат
-
-Давай самые лучшие варианты для своего клиента, удачи!"""
-            messages = [{"role": "system", "content": system_message}] + chat_history + [{"role": "user", "content": message.text}]
             response = g4f.ChatCompletion.create(
                 model="llama-3.3-70b",
                 provider=Provider.DeepInfraChat,
+                messages=messages
+            )
+        elif model == "gemini-1.5-flash":
+            response = g4f.ChatCompletion.create(
+                model="gemini-1.5-flash",
+                provider=Provider.Blackbox,
                 messages=messages
             )
         
