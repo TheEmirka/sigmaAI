@@ -47,7 +47,7 @@ if platform.system() == 'Windows':
 
 # Инициализация бота с хранилищем состояний
 state_storage = StateMemoryStorage()
-bot = telebot.TeleBot('7896238531:AAEJsiqyImXEVwkfTeQ-55u3vYfZfadm9L8', state_storage=state_storage)
+bot = telebot.TeleBot('7606481420:AAF2D6dln9mMSxBXgN3adMNZ575324dOzbI', state_storage=state_storage)
 
 # Настройки для бота
 bot.remove_webhook()
