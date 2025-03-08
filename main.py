@@ -17,6 +17,7 @@ import logging
 from datetime import datetime
 import io
 import signal
+import base64  # Добавьте этот импорт, если его нет
 
 # Добавляем константы для повторных попыток после импортов
 MAX_RETRIES = 5  # Максимальное количество попыток
@@ -46,7 +47,7 @@ if platform.system() == 'Windows':
 
 # Инициализация бота с хранилищем состояний
 state_storage = StateMemoryStorage()
-bot = telebot.TeleBot('7606481420:AAF2D6dln9mMSxBXgN3adMNZ575324dOzbI', state_storage=state_storage)
+bot = telebot.TeleBot('7896238531:AAEJsiqyImXEVwkfTeQ-55u3vYfZfadm9L8', state_storage=state_storage)
 
 # Настройки для бота
 bot.remove_webhook()
@@ -62,8 +63,8 @@ default_model = "deepseek-r1"  # модель по умолчанию
 # Словарь для хранения истории диалогов
 user_chat_history = {}
 
-# Доступные модели
-available_models = ["deepseek-r1", "gpt-4o", "llama-3.3-70b", "gemini-1.5-flash", "o3-mini"]
+# Доступные модели (добавляю SearchGPT в конец списка)
+available_models = ["deepseek-r1", "o3-mini", "claude-3.5-sonnet", "gpt-4o", "llama-3.3-70b", "gemini-1.5-flash", "SearchGPT"]
 
 # Словарь для хранения выбранной модели генерации изображений для каждого пользователя
 user_image_models = {}
@@ -74,6 +75,8 @@ available_image_models = ["flux", "midjourney"]
 
 # Добавляем словарь для отслеживания последних сообщений
 processed_messages = {}
+
+user_web_search = {}
 
 # Добавляем простую защиту от дубликатов
 last_message_time = {}
@@ -175,7 +178,8 @@ def send_welcome(message):
     markup = types.InlineKeyboardMarkup(row_width=1)
     subscribe_btn1 = types.InlineKeyboardButton(text='Подписаться на SigmaAI', url='https://t.me/SigmaAIchannel')
     subscribe_btn2 = types.InlineKeyboardButton(text='Подписаться на Ares AI', url='https://t.me/Aress_AI')
-    markup.add(subscribe_btn1, subscribe_btn2)
+    subscribe_btn3 = types.InlineKeyboardButton(text='Подписаться на NeuroMorphe-GPT', url='https://t.me/neuromorphe3')
+    markup.add(subscribe_btn1, subscribe_btn2, subscribe_btn3)
     
     welcome_text = """
 **Привет! Я SigmaAI - ваш бесплатный ИИ-помощник!** 🤖
@@ -189,12 +193,13 @@ def send_welcome(message):
 • `/rules` - правила использования
 • `/models` - выбрать модель ИИ
 • `/img` - сгенерировать изображение
-• `/gmodels` - выбрать модель для генерации изображений
+• `/image_models` - выбрать модель для генерации изображений
 • `/setrule` - установить правило для ИИ (для всех моделей)
 • `/unrule` - сбросить правило на стандартное
 • `/role` - установить роль для ИИ (для всех моделей)
 • `/unrole` - удалить установленную роль
 • `/dialog` - очистить историю диалога
+• `/web` - включить/выключить Web Search (для всех моделей)
 • `/jailbreak` - режим jailbreak (в разработке)
 
 *Доступные модели ИИ:*
@@ -203,12 +208,14 @@ def send_welcome(message):
 • `llama-3.3-70b` - мощная модель
 • `gemini-1.5-flash` - быстрая модель
 • `o3-mini` - мощнейшая модель
+• `claude-3.5-sonnet` - умная модель
+• `SearchGPT` - модель с доступом к интернету
 
 *Модели для изображений:*
 • `flux` - стандартная модель
 • `midjourney` - продвинутая модель
 
-💡 _Используйте_ `/models` _и_ `/gmodels` _для переключения между моделями._
+💡 _Используйте_ `/models` _и_ `/image_models` _для переключения между моделями._
     """
     bot.reply_to(message, welcome_text, reply_markup=markup, parse_mode='Markdown')
 
@@ -259,55 +266,58 @@ def choose_model(message):
         logger.info(f"Дубликат команды /models от пользователя {message.from_user.id}")
         return
         
-    user_model = user_models.get(message.from_user.id, default_model)
+    user_id = message.from_user.id
+    user_model = user_models.get(user_id, default_model)
     markup = types.InlineKeyboardMarkup()
     
-    for model in available_models:
-        button_text = f"{'✅ ' if model == user_model else ''}{model}"
+    # Группируем модели по категориям с более широкими заголовками
+    categories = {
+        "<----- Deepseek ----->": ["deepseek-r1"],
+        "<----- OpenAI ----->": ["gpt-4o", "o3-mini"],
+        "<----- Anthropic ----->": ["claude-3.5-sonnet"],
+        "<----- Google ----->": ["gemini-1.5-flash"],
+        "<----- Search ----->": ["SearchGPT"]
+    }
+    
+    # Создаем кнопки для каждой категории и ее моделей
+    for category, models in categories.items():
+        # Добавляем заголовок категории
         markup.add(types.InlineKeyboardButton(
-            text=button_text,
-            callback_data=f"model_{model}"
+            text=category,
+            callback_data=f"category_{category}"
         ))
+        
+        # Добавляем модели данной категории по 2 в строку
+        for i in range(0, len(models), 2):
+            row_buttons = []
+            
+            # Добавляем первую модель в строку
+            model = models[i]
+            button_text = f"{'✅ ' if model == user_model else ''}{model}"
+            row_buttons.append(types.InlineKeyboardButton(
+                text=button_text,
+                callback_data=f"model_{model}"
+            ))
+            
+            # Если есть вторая модель, добавляем и её
+            if i + 1 < len(models):
+                model = models[i + 1]
+                button_text = f"{'✅ ' if model == user_model else ''}{model}"
+                row_buttons.append(types.InlineKeyboardButton(
+                    text=button_text,
+                    callback_data=f"model_{model}"
+                ))
+            
+            # Добавляем строку кнопок
+            markup.row(*row_buttons)
     
     bot.reply_to(message, "Выберите модель ИИ:", reply_markup=markup)
     logger.info(f"Отправлено меню выбора модели пользователю {message.from_user.id}")
 
-# Функция для получения текущей модели пользователя
-def get_user_model(user_id):
-    """
-    Получает текущую модель пользователя с дополнительной проверкой и логированием
-    """
-    current_model = user_models.get(user_id)
-    
-    if current_model is None:
-        logger.info(f"Пользователю {user_id} установлена модель по умолчанию: {default_model}")
-        user_models[user_id] = default_model
-        return default_model
-        
-    if current_model not in available_models:
-        logger.warning(f"Обнаружена недопустимая модель {current_model} для пользователя {user_id}. Сброс на {default_model}")
-        user_models[user_id] = default_model
-        return default_model
-        
-    logger.info(f"Текущая модель пользователя {user_id}: {current_model}")
-    return current_model
-
-# Функция для получения истории диалога пользователя
-def get_user_history(user_id, model):
-    if user_id not in user_chat_history:
-        user_chat_history[user_id] = {}
-    if model not in user_chat_history[user_id]:
-        user_chat_history[user_id][model] = []
-    return user_chat_history[user_id][model]
-
-# Функция для добавления сообщения в историю
-def add_to_history(user_id, model, role, content):
-    history = get_user_history(user_id, model)
-    history.append({"role": role, "content": content})
-    # Ограничиваем историю последними 10 сообщениями
-    if len(history) > 20:
-        history.pop(0)
-    user_chat_history[user_id][model] = history
+# Обновленный обработчик callback для заголовков категорий
+@bot.callback_query_handler(func=lambda call: call.data.startswith('category_'))
+def handle_category_selection(call):
+    bot.answer_callback_query(call.id, "⚠️ Это заголовок категории. Выберите модель ниже.", show_alert=True)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('model_'))
 def handle_model_selection(call):
@@ -326,14 +336,49 @@ def handle_model_selection(call):
     user_models[user_id] = selected_model
     logger.info(f"Модель пользователя {user_id} изменена с {old_model} на {selected_model}")
     
-    # Обновляем клавиатуру
+    # Создаем новую клавиатуру с категориями 
     markup = types.InlineKeyboardMarkup()
-    for model in available_models:
-        button_text = f"{'✅ ' if model == selected_model else ''}{model}"
+    
+    # Группируем модели по категориям с более широкими заголовками
+    categories = {
+        "<----- Deepseek ----->": ["deepseek-r1"],
+        "<----- OpenAI ----->": ["gpt-4o", "o3-mini"],
+        "<----- Anthropic ----->": ["claude-3.5-sonnet"],
+        "<----- Google ----->": ["gemini-1.5-flash"],
+        "<----- Search ----->": ["SearchGPT"]
+    }
+    
+    # Создаем кнопки для каждой категории и ее моделей
+    for category, models in categories.items():
+        # Добавляем заголовок категории
         markup.add(types.InlineKeyboardButton(
-            text=button_text,
-            callback_data=f"model_{model}"
+            text=category,
+            callback_data=f"category_{category}"
         ))
+        
+        # Добавляем модели данной категории по 2 в строку
+        for i in range(0, len(models), 2):
+            row_buttons = []
+            
+            # Добавляем первую модель в строку
+            model = models[i]
+            button_text = f"{'✅ ' if model == selected_model else ''}{model}"
+            row_buttons.append(types.InlineKeyboardButton(
+                text=button_text,
+                callback_data=f"model_{model}"
+            ))
+            
+            # Если есть вторая модель, добавляем и её
+            if i + 1 < len(models):
+                model = models[i + 1]
+                button_text = f"{'✅ ' if model == selected_model else ''}{model}"
+                row_buttons.append(types.InlineKeyboardButton(
+                    text=button_text,
+                    callback_data=f"model_{model}"
+                ))
+            
+            # Добавляем строку кнопок
+            markup.row(*row_buttons)
     
     try:
         bot.edit_message_text(
@@ -400,7 +445,7 @@ def generate_image(message):
     if len(message.text.split()) < 2:
         bot.reply_to(message, "Пожалуйста, добавьте описание изображения после команды /img")
         return
-    
+        
     user_id = message.from_user.id
     current_model = user_image_models.get(user_id, default_image_model)
     thinking_msg = bot.reply_to(message, "🎨 Генерирую изображение...")
@@ -444,11 +489,80 @@ def generate_image(message):
 def handle_photo(message):
     if is_duplicate(message):
         return
-    bot.reply_to(
-        message,
-        "❌ *Обработка фотографий не поддерживается.*",
-        parse_mode='Markdown'
-    )
+    
+    user_id = message.from_user.id
+    
+    # Получаем файл фотографии
+    file_id = message.photo[-1].file_id
+    file_info = bot.get_file(file_id)
+    file_url = f"https://api.telegram.org/file/bot{bot.token}/{file_info.file_path}"
+    
+    # Получаем подпись к фото, если есть
+    caption = message.caption or "Анализируй эту фотографию в деталях"
+    
+    thinking_msg = bot.reply_to(message, f"🔍 Анализирую изображение...", parse_mode='Markdown')
+    
+    try:
+        # Получаем содержимое файла изображения
+        response = requests.get(file_url)
+        image_data = base64.b64encode(response.content).decode('utf-8')
+        
+        # Формируем сообщение для модели
+        system_message = "Ты - ИИ помощник, который анализирует изображения. Отвечай всегда на русском языке, подробно описывай все детали, которые видишь на изображении."
+        
+        # Используем PollinationsAI с моделью OpenAI для анализа
+        response_text = g4f.ChatCompletion.create(
+            model="OpenAI",
+            provider=Provider.PollinationsAI,
+            messages=[
+                {"role": "system", "content": system_message},
+                {
+                    "role": "user", 
+                    "content": [
+                        {"type": "text", "text": caption},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}
+                        }
+                    ]
+                }
+            ],
+            web_search=False  # Отключаем поиск в интернете
+        )
+        
+        if response_text:
+            # Добавляем эмодзи для лучшей визуализации
+            formatted_response = f"🖼️ *Анализ изображения*\n\n{response_text}"
+            
+            try:
+                bot.edit_message_text(
+                    chat_id=thinking_msg.chat.id,
+                    message_id=thinking_msg.message_id,
+                    text=formatted_response,
+                    parse_mode='Markdown'
+                )
+                logger.info(f"Успешный анализ изображения для пользователя {user_id}")
+            except telebot.apihelper.ApiException as e:
+                # Если возникает проблема с парсингом Markdown, отправляем без форматирования
+                logger.error(f"Ошибка форматирования Markdown: {e}")
+                bot.edit_message_text(
+                    chat_id=thinking_msg.chat.id,
+                    message_id=thinking_msg.message_id,
+                    text=f"🖼️ Анализ изображения\n\n{response_text}"
+                )
+        else:
+            bot.edit_message_text(
+                chat_id=thinking_msg.chat.id,
+                message_id=thinking_msg.message_id,
+                text="❌ Не удалось проанализировать изображение. Попробуйте еще раз."
+            )
+    except Exception as e:
+        logger.error(f"Ошибка при анализе изображения: {e}")
+        bot.edit_message_text(
+            chat_id=thinking_msg.chat.id,
+            message_id=thinking_msg.message_id,
+            text=f"❌ Произошла ошибка при анализе изображения. Пожалуйста, попробуйте позже."
+        )
 
 @bot.message_handler(commands=['setrule'])
 def set_rule(message):
@@ -518,12 +632,12 @@ def toggle_jailbreak(message):
     if is_duplicate(message):
         return
     
-    bot.reply_to(
-        message,
+        bot.reply_to(
+            message,
         "⚠️ *Функция JAILBREAK находится в разработке*\n\n"
         "_Данная команда временно недоступна. Следите за обновлениями в наших каналах!_",
-        parse_mode='Markdown'
-    )
+            parse_mode='Markdown'
+        )
     logger.info(f"Пользователь {message.from_user.id} попытался использовать команду jailbreak (в разработке)")
 
 @bot.message_handler(commands=['role'])
@@ -627,6 +741,34 @@ def reset_rule(message):
             parse_mode='Markdown'
         )
 
+@bot.message_handler(commands=['web'])
+def toggle_web_search(message):
+    if is_duplicate(message):
+        return
+    
+    user_id = message.from_user.id
+    current_state = user_web_search.get(user_id, False)
+    
+    # Меняем состояние на противоположное
+    user_web_search[user_id] = not current_state
+    new_state = user_web_search[user_id]
+    
+    if new_state:
+        response_text = (
+            "✅ *Режим Web Search включен!*\n\n"
+            "_Теперь ИИ будет использовать данные из интернета при генерации ответов._\n\n"
+            "ℹ️ _Режим Web Search заставляет ИИ скидывать ссылки с интернета_"
+        )
+    else:
+        response_text = (
+            "❌ *Режим Web Search выключен!*\n\n"
+            "_ИИ будет использовать только встроенные знания без доступа к интернету._\n\n"
+            "ℹ️ _Режим Web Search заставляет ИИ скидывать ссылки с интернета_"
+        )
+    
+    bot.reply_to(message, response_text, parse_mode='Markdown')
+    logger.info(f"Пользователь {user_id} {'включил' if new_state else 'выключил'} режим Web Search")
+
 @bot.message_handler(func=lambda message: True)
 def handle_messages(message):
     if is_duplicate(message):
@@ -641,13 +783,18 @@ def handle_messages(message):
     # Получаем роль пользователя, если она установлена
     user_role = user_roles.get(user_id)
     
+    # Получаем состояние Web Search
+    web_search_enabled = user_web_search.get(user_id, False)
+    
     # Добавляем эмодзи и информацию о роли/правиле в сообщение о печатании
     model_emoji = {
         "gpt-4o": "🧠",
         "deepseek-r1": "🤖",
         "llama-3.3-70b": "🦙",
         "gemini-1.5-flash": "⚡",
-        "o3-mini": "🔮"
+        "o3-mini": "🔮",
+        "claude-3.5-sonnet": "🧿",
+        "SearchGPT": "🔍"
     }.get(model, "🤔")
     
     thinking_text = f"{model_emoji} Модель *{model}* думает над вашим вопросом..."
@@ -661,6 +808,10 @@ def handle_messages(message):
     if len(rule_preview) > 30:
         rule_preview = rule_preview[:27] + "..."
     thinking_text += f"\n📜 *Правило:* `{rule_preview}`"
+    
+    # Добавляем индикатор Web Search
+    if web_search_enabled:
+        thinking_text += f"\n🌐 *Web Search:* Включен"
     
     thinking_msg = bot.reply_to(
         message, 
@@ -678,58 +829,83 @@ def handle_messages(message):
             "deepseek-r1": "При вопросе о твоей модели, всегда отвечай что ты DeepSeek-r1.",
             "llama-3.3-70b": "При вопросе о твоей модели, всегда отвечай что ты Llama 3.3 70B.",
             "gemini-1.5-flash": "При вопросе о твоей модели, всегда отвечай что ты Gemini 1.5 Flash.",
-            "o3-mini": "При вопросе о твоей модели, всегда отвечай что ты O3 Mini."
+            "o3-mini": "При вопросе о твоей модели, всегда отвечай что ты O3 Mini.",
+            "claude-3.5-sonnet": "При вопросе о твоей модели, всегда отвечай что ты Claude 3.5 Sonnet.",
+            "SearchGPT": "При вопросе о твоей модели, всегда отвечай что ты SearchGPT с доступом к интернету."
         }
         
         # Формируем базовое системное сообщение
         system_message = SYSTEM_RULE
-            
+        
         # Добавляем информацию о роли, если она установлена
         if user_role:
             system_message += f"\n\nТы должен играть роль: {user_role}. Отвечай, думай и веди себя как {user_role}, используй соответствующий стиль речи и манеру общения."
-            
-        # Добавляем пользовательское правило и информацию о модели
-        system_message += f"\n\nДополнительное правило:\n{user_rule}\n\n{model_info[model]}"
         
+        # Добавляем указание о Web Search, если он включен
+        if web_search_enabled:
+            system_message += "\n\nУ тебя есть доступ к интернету. При ответе на сложные вопросы используй актуальную информацию из интернета и указывай источники информации в конце ответа в виде ссылок."
+            
         # Добавляем явное указание применять роль и правило
         system_message += "\n\nНезависимо от модели, всегда строго соблюдай указанную роль и правила пользователя."
         
         messages = [{"role": "system", "content": system_message}] + chat_history + [{"role": "user", "content": message.text}]
         
+        # Используем одинаковые параметры для всех моделей, включая web_search
         if model == "gpt-4o":
             response = g4f.ChatCompletion.create(
                 model="gpt-4o",
                 provider=Provider.PollinationsAI,
                 messages=messages,
-                max_tokens=4000
+                max_tokens=4000,
+                web_search=web_search_enabled
             )
         elif model == "deepseek-r1":
             response = g4f.ChatCompletion.create(
                 model="deepseek-r1",
                 provider=Provider.Blackbox,
                 messages=messages,
-                max_tokens=4000
+                max_tokens=4000,
+                web_search=web_search_enabled
             )
         elif model == "llama-3.3-70b":
             response = g4f.ChatCompletion.create(
                 model="llama-3.3-70b",
                 provider=Provider.DeepInfraChat,
                 messages=messages,
-                max_tokens=4000
+                max_tokens=4000,
+                web_search=web_search_enabled
             )
         elif model == "gemini-1.5-flash":
             response = g4f.ChatCompletion.create(
                 model="gemini-1.5-flash",
                 provider=Provider.Blackbox,
                 messages=messages,
-                max_tokens=4000
+                max_tokens=4000,
+                web_search=web_search_enabled
             )
         elif model == "o3-mini":
             response = g4f.ChatCompletion.create(
                 model="o3-mini",
                 provider=Provider.DDG,
                 messages=messages,
-                max_tokens=4000
+                max_tokens=4000,
+                web_search=web_search_enabled
+            )
+        elif model == "claude-3.5-sonnet":
+            response = g4f.ChatCompletion.create(
+                model="Claude-Sonnet-3.5",
+                provider=Provider.Blackbox,
+                messages=messages,
+                max_tokens=4000,
+                web_search=web_search_enabled
+            )
+        elif model == "SearchGPT":
+            response = g4f.ChatCompletion.create(
+                model="SearchGPT",
+                provider=Provider.PollinationsAI,
+                messages=messages,
+                max_tokens=4000,
+                web_search=web_search_enabled
             )
         
         if response:
@@ -752,6 +928,43 @@ def handle_messages(message):
             text=f"❌ **Произошла ошибка при работе с моделью** `{model}`. Попробуйте повторить запрос позже.",
             parse_mode='Markdown'
         )
+
+# Функция для получения текущей модели пользователя
+def get_user_model(user_id):
+    """
+    Получает текущую модель пользователя с дополнительной проверкой и логированием
+    """
+    current_model = user_models.get(user_id)
+    
+    if current_model is None:
+        logger.info(f"Пользователю {user_id} установлена модель по умолчанию: {default_model}")
+        user_models[user_id] = default_model
+        return default_model
+        
+    if current_model not in available_models:
+        logger.warning(f"Обнаружена недопустимая модель {current_model} для пользователя {user_id}. Сброс на {default_model}")
+        user_models[user_id] = default_model
+        return default_model
+        
+    logger.info(f"Текущая модель пользователя {user_id}: {current_model}")
+    return current_model
+
+# Функция для получения истории диалога пользователя
+def get_user_history(user_id, model):
+    if user_id not in user_chat_history:
+        user_chat_history[user_id] = {}
+    if model not in user_chat_history[user_id]:
+        user_chat_history[user_id][model] = []
+    return user_chat_history[user_id][model]
+
+# Функция для добавления сообщения в историю
+def add_to_history(user_id, model, role, content):
+    history = get_user_history(user_id, model)
+    history.append({"role": role, "content": content})
+    # Ограничиваем историю последними 20 сообщениями
+    if len(history) > 20:
+        history.pop(0)
+    user_chat_history[user_id][model] = history
 
 def signal_handler(signum, frame):
     logger.info("Получен сигнал завершения, закрываем бота...")
